@@ -1,5 +1,3 @@
-version: "2"
-
 linters:
   enable:
     - errcheck
@@ -8,20 +6,17 @@ linters:
     - ineffassign
     - unused
     - misspell
-
-  exclusions:
-    rules:
-      - path: _test\.go
-        linters:
-          - errcheck
-
-formatters:
-  enable:
     - gofmt
 
-  settings:
-    gofmt:
-      simplify: true
+linters-settings:
+  gofmt:
+    simplify: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
 
 run:
   timeout: 5m
