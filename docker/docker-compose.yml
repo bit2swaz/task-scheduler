@@ -1,0 +1,63 @@
+x-scheduler: &scheduler-base
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  scheduler-1:
+    <<: *scheduler-base
+    ports: ["3001:3000"]
+    environment:
+      - NODE_ID=node-1
+      - PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-change-me-before-use}
+      - HASH_RING_REPLICAS=150
+
+  scheduler-2:
+    <<: *scheduler-base
+    ports: ["3002:3000"]
+    environment:
+      - NODE_ID=node-2
+      - PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-change-me-before-use}
+      - HASH_RING_REPLICAS=150
+
+  scheduler-3:
+    <<: *scheduler-base
+    ports: ["3003:3000"]
+    environment:
+      - NODE_ID=node-3
+      - PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-change-me-before-use}
+      - HASH_RING_REPLICAS=150
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - scheduler-1
+      - scheduler-2
+      - scheduler-3
+
+volumes:
+  redis_data:
