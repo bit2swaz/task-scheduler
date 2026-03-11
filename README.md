@@ -2,24 +2,20 @@
 
 A distributed cron-like task scheduler in Go. Tasks are registered with cron expressions, distributed across worker nodes using consistent hashing, and a single leader is elected via Redis-based heartbeat to prevent duplicate executions.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     Node Cluster                          │
-│                                                           │
-│  ┌───────────┐    ┌───────────┐    ┌───────────┐         │
-│  │  Node 1   │    │  Node 2   │    │  Node 3   │         │
-│  │ (LEADER)  │    │ (standby) │    │ (standby) │         │
-│  └─────┬─────┘    └─────┬─────┘    └─────┬─────┘         │
-│        │                │                │                │
-│        └────────────────┼────────────────┘                │
-│                         │                                  │
-│              ┌──────────▼──────────┐                      │
-│              │       Redis 7       │                       │
-│              │  - Leader lock key  │                       │
-│              │  - Task registry    │                       │
-│              │  - Execution log    │                       │
-│              └─────────────────────┘                       │
-└──────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph cluster["Node Cluster"]
+        n1["Node 1\n(LEADER)"]
+        n2["Node 2\n(standby)"]
+        n3["Node 3\n(standby)"]
+    end
+    redis[("Redis 7\nleader lock key\ntask registry\nexecution logs")]
+    n1 <-->|heartbeat / election| redis
+    n2 <-->|heartbeat / election| redis
+    n3 <-->|heartbeat / election| redis
+    client([Client]) -->|REST + JWT| n1
+    client -->|REST + JWT| n2
+    client -->|REST + JWT| n3
 ```
 
 ## Stack
@@ -124,13 +120,76 @@ make test-integration
 
 Each node races to set `scheduler:leader = <node_id>` in Redis using `SET NX EX <leaseTTL>`. Only one node wins. The winner renews the key every `pollInterval`; if it fails to renew (crash, network partition) the key expires and a standby acquires it within `leaseTTL + pollInterval` (at most 15 seconds with defaults). Callbacks `OnElected` / `OnEvicted` wire directly into the scheduler start/stop lifecycle.
 
+```mermaid
+sequenceDiagram
+    participant N1 as Node 1
+    participant N2 as Node 2
+    participant R as Redis
+
+    N1->>R: SET scheduler:leader node-1 NX EX 10
+    R-->>N1: OK (elected)
+    N2->>R: SET scheduler:leader node-2 NX EX 10
+    R-->>N2: nil (lost)
+    loop every 5s
+        N1->>R: GET scheduler:leader
+        R-->>N1: node-1
+        N1->>R: PEXPIRE scheduler:leader 10000
+    end
+    Note over N1: crash or network loss
+    Note over R: key expires after leaseTTL
+    N2->>R: SET scheduler:leader node-2 NX EX 10
+    R-->>N2: OK (new leader)
+    N2->>N2: OnElected -> LoadAndSchedule
+```
+
 ### Consistent Hashing
 
 Task IDs are hashed onto a ring of virtual nodes (150 replicas per physical node by default) using SHA-256. `ring.Get(taskID)` returns the responsible node via binary search with wrap-around. Each node only schedules and executes tasks assigned to it. When nodes join or leave, only the tasks that fall on the moved arc of the ring are reassigned; the rest are unaffected.
 
+```mermaid
+flowchart LR
+    subgraph ring["Hash Ring (SHA-256, 150 vnodes/node)"]
+        t1([task-a]) -->|hash| n1[node-1]
+        t2([task-b]) -->|hash| n2[node-2]
+        t3([task-c]) -->|hash| n1
+        t4([task-d]) -->|hash| n3[node-3]
+    end
+    n1 --> cron1["cron runner\n(node-1)"]
+    n2 --> cron2["cron runner\n(node-2)"]
+    n3 --> cron3["cron runner\n(node-3)"]
+```
+
 ### Task Dispatch
 
 The leader loads all tasks from Redis on election, filters to those assigned to this node via the ring, and registers them with `robfig/cron`. Cron fires execute an HTTP POST to the task endpoint and write a structured `ExecutionLog` (with TTL 7 days) to Redis. Manual triggers bypass cron and call the executor directly.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant MW as JWT Middleware
+    participant H as Handler
+    participant S as Scheduler
+    participant E as Executor
+    participant R as Redis
+
+    Note over S,R: on election
+    S->>R: SMEMBERS scheduler:tasks
+    R-->>S: [task-a, task-b, ...]
+    S->>S: ring.Get(id) == this node?
+    S->>S: cron.AddFunc(expr, job)
+
+    Note over S,E: on cron fire or manual trigger
+    C->>MW: POST /tasks/{id}/run
+    MW->>H: verified claims
+    H->>E: Execute(task)
+    E->>R: GET scheduler:task:{id}
+    R-->>E: task JSON
+    E->>E: HTTP POST to task endpoint
+    E->>R: LPUSH scheduler:task-logs:{id} execLog
+    E->>R: EXPIRE execLog TTL 7d
+    E-->>H: ExecutionLog
+    H-->>C: 202 + exec_id
+```
 
 ## API Reference
 
