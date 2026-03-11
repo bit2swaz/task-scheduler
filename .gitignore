@@ -1,0 +1,24 @@
+# binaries
+bin/
+*.exe
+
+# environment
+.env
+
+# test cache and coverage
+*.test
+*.out
+coverage.html
+
+# editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# os
+.DS_Store
+Thumbs.db
+
+# vendor (not used; prefer module cache)
+vendor/
