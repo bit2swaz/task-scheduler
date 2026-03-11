@@ -1,24 +1,27 @@
-run:
-  timeout: 5m
+version: "2"
 
 linters:
   enable:
     - errcheck
     - govet
     - staticcheck
-    - gofmt
-    - gosimple
     - ineffassign
     - unused
     - misspell
 
-linters-settings:
-  gofmt:
-    simplify: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
 
-issues:
-  exclude-rules:
-    # test files can use broad assertions
-    - path: _test\.go
-      linters:
-        - errcheck
+formatters:
+  enable:
+    - gofmt
+
+  settings:
+    gofmt:
+      simplify: true
+
+run:
+  timeout: 5m
