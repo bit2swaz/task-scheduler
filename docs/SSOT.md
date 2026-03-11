@@ -18,40 +18,61 @@ A distributed cron-like task scheduler in Go. Supports registering tasks with cr
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     Node Cluster                          │
-│                                                           │
-│  ┌───────────┐    ┌───────────┐    ┌───────────┐         │
-│  │  Node 1   │    │  Node 2   │    │  Node 3   │         │
-│  │ (LEADER)  │    │ (standby) │    │ (standby) │         │
-│  └─────┬─────┘    └─────┬─────┘    └─────┬─────┘         │
-│        │                │                │                │
-│        └────────────────┼────────────────┘                │
-│                         │                                  │
-│              ┌──────────▼──────────┐                      │
-│              │       Redis         │                       │
-│              │  - Leader lock key  │                       │
-│              │  - Task registry    │                       │
-│              │  - Heartbeats       │                       │
-│              │  - Execution log    │                       │
-│              └─────────────────────┘                       │
-└──────────────────────────────────────────────────────────┘
+### Cluster Topology
 
-Leader Election Flow:
-Node attempts SET scheduler:leader <nodeId> NX EX 10
-  → Success: becomes leader, runs scheduler, renews every 5s
-  → Fail: becomes standby, polls every 5s to take over
+```mermaid
+graph TD
+    subgraph cluster["Node Cluster"]
+        n1["Node 1\n(LEADER)"]
+        n2["Node 2\n(standby)"]
+        n3["Node 3\n(standby)"]
+    end
+    redis[("Redis 7\nleader lock key\ntask registry\nexecution logs")]
+    n1 <-->|heartbeat / election| redis
+    n2 <-->|heartbeat / election| redis
+    n3 <-->|heartbeat / election| redis
+    client([Client]) -->|REST + JWT| n1
+    client -->|REST + JWT| n2
+    client -->|REST + JWT| n3
 ```
 
-## Consistent Hashing (Task → Node Assignment)
-```
-Task IDs hashed onto a ring → assigned to responsible node
-Ring rebalances automatically when nodes join/leave
+### Leader Election Flow
 
-Task "send-report"  → hash(task_id) mod ring → Node 2
-Task "cleanup-logs" → hash(task_id) mod ring → Node 1
-Task "sync-users"   → hash(task_id) mod ring → Node 3
+```mermaid
+sequenceDiagram
+    participant N1 as Node 1
+    participant N2 as Node 2
+    participant R as Redis
+
+    N1->>R: SET scheduler:leader node-1 NX EX 10
+    R-->>N1: OK (elected)
+    N2->>R: SET scheduler:leader node-2 NX EX 10
+    R-->>N2: nil (lost)
+    loop every 5s
+        N1->>R: GET scheduler:leader
+        R-->>N1: node-1
+        N1->>R: PEXPIRE scheduler:leader 10000
+    end
+    Note over N1: crash or network loss
+    Note over R: key expires after leaseTTL
+    N2->>R: SET scheduler:leader node-2 NX EX 10
+    R-->>N2: OK (new leader)
+    N2->>N2: OnElected -> LoadAndSchedule
+```
+
+## Consistent Hashing (Task to Node Assignment)
+
+```mermaid
+flowchart LR
+    subgraph ring["Hash Ring (SHA-256, 150 vnodes/node)"]
+        t1([task-a]) -->|hash| n1[node-1]
+        t2([task-b]) -->|hash| n2[node-2]
+        t3([task-c]) -->|hash| n1
+        t4([task-d]) -->|hash| n3[node-3]
+    end
+    n1 --> cron1["cron runner\n(node-1)"]
+    n2 --> cron2["cron runner\n(node-2)"]
+    n3 --> cron3["cron runner\n(node-3)"]
 ```
 
 ## Directory Structure
@@ -252,6 +273,37 @@ func (s *Scheduler) LoadAndSchedule(ctx context.Context) error {
 ```
 
 ### 4. Executor
+
+#### Task Dispatch Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant MW as JWT Middleware
+    participant H as Handler
+    participant S as Scheduler
+    participant E as Executor
+    participant R as Redis
+
+    Note over S,R: on election
+    S->>R: SMEMBERS scheduler:tasks
+    R-->>S: [task-a, task-b, ...]
+    S->>S: ring.Get(id) == this node?
+    S->>S: cron.AddFunc(expr, job)
+
+    Note over S,E: on cron fire or manual trigger
+    C->>MW: POST /tasks/{id}/run
+    MW->>H: verified claims
+    H->>E: Execute(task)
+    E->>R: GET scheduler:task:{id}
+    R-->>E: task JSON
+    E->>E: HTTP POST to task endpoint
+    E->>R: LPUSH scheduler:task-logs:{id} execLog
+    E->>R: EXPIRE execLog TTL 7d
+    E-->>H: ExecutionLog
+    H-->>C: 202 + exec_id
+```
+
 ```go
 // internal/executor/executor.go
 // Executes a task by POSTing to its endpoint, logs result to Redis
