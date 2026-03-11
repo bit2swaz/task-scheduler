@@ -111,41 +111,44 @@ type tokenRequest struct {
 
 // Config holds all dependencies required to create a Handler.
 type Config struct {
-	Tasks     TaskStore
-	Ring      NodeAssigner
-	Exec      TaskRunner
-	Nodes     NodeLister
-	Election  LeaderChecker
-	Sched     ScheduleCounter
-	JWTSecret string
-	NodeID    string
+	Tasks          TaskStore
+	Ring           NodeAssigner
+	Exec           TaskRunner
+	Nodes          NodeLister
+	Election       LeaderChecker
+	Sched          ScheduleCounter
+	JWTSecret      string
+	NodeID         string
+	MetricsHandler http.Handler // optional: if set, mounted at GET /metrics (no auth)
 }
 
 // Handler holds all service dependencies for HTTP request handling.
 type Handler struct {
-	tasks     TaskStore
-	ring      NodeAssigner
-	exec      TaskRunner
-	nodes     NodeLister
-	election  LeaderChecker
-	sched     ScheduleCounter
-	jwtSecret string
-	nodeID    string
-	startedAt time.Time
+	tasks          TaskStore
+	ring           NodeAssigner
+	exec           TaskRunner
+	nodes          NodeLister
+	election       LeaderChecker
+	sched          ScheduleCounter
+	jwtSecret      string
+	nodeID         string
+	startedAt      time.Time
+	metricsHandler http.Handler
 }
 
 // NewHandler creates a Handler from the provided Config.
 func NewHandler(cfg Config) *Handler {
 	return &Handler{
-		tasks:     cfg.Tasks,
-		ring:      cfg.Ring,
-		exec:      cfg.Exec,
-		nodes:     cfg.Nodes,
-		election:  cfg.Election,
-		sched:     cfg.Sched,
-		jwtSecret: cfg.JWTSecret,
-		nodeID:    cfg.NodeID,
-		startedAt: time.Now(),
+		tasks:          cfg.Tasks,
+		ring:           cfg.Ring,
+		exec:           cfg.Exec,
+		nodes:          cfg.Nodes,
+		election:       cfg.Election,
+		sched:          cfg.Sched,
+		jwtSecret:      cfg.JWTSecret,
+		nodeID:         cfg.NodeID,
+		startedAt:      time.Now(),
+		metricsHandler: cfg.MetricsHandler,
 	}
 }
 
@@ -161,6 +164,9 @@ func NewRouter(h *Handler) chi.Router {
 	// public — no auth required
 	r.Post("/auth/token", h.issueToken)
 	r.Get("/health", h.health)
+	if h.metricsHandler != nil {
+		r.Get("/metrics", h.metricsHandler.ServeHTTP)
+	}
 
 	// protected — JWT required
 	r.Group(func(r chi.Router) {
