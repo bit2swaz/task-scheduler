@@ -150,31 +150,50 @@ func NewHandler(cfg Config) *Handler {
 }
 
 // NewRouter builds the chi router with all routes mounted.
+// Public routes: /health, /auth/token.
+// Protected routes: /tasks/*, /nodes — require a valid Bearer JWT.
 func NewRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(responseRequestID)
 	r.Use(middleware.Recoverer)
 
+	// public — no auth required
 	r.Post("/auth/token", h.issueToken)
 	r.Get("/health", h.health)
 
-	r.Route("/tasks", func(r chi.Router) {
-		r.Get("/", h.listTasks)
-		r.Post("/", h.createTask)
-		r.Route("/{id}", func(r chi.Router) {
-			r.Get("/", h.getTask)
-			r.Put("/", h.updateTask)
-			r.Delete("/", h.deleteTask)
-			r.Post("/run", h.runTask)
-			r.Get("/logs", h.taskLogs)
+	// protected — JWT required
+	r.Group(func(r chi.Router) {
+		r.Use(JWTMiddleware(h.jwtSecret))
+		r.Route("/tasks", func(r chi.Router) {
+			r.Get("/", h.listTasks)
+			r.Post("/", h.createTask)
+			r.Route("/{id}", func(r chi.Router) {
+				r.Get("/", h.getTask)
+				r.Put("/", h.updateTask)
+				r.Delete("/", h.deleteTask)
+				r.Post("/run", h.runTask)
+				r.Get("/logs", h.taskLogs)
+			})
 		})
+		r.Get("/nodes", h.listNodes)
 	})
-	r.Get("/nodes", h.listNodes)
 
 	return r
 }
 
 // --- helpers ---
+
+// responseRequestID copies the chi request ID from the context into the
+// X-Request-Id response header so callers can correlate requests.
+func responseRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+			w.Header().Set(middleware.RequestIDHeader, reqID)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

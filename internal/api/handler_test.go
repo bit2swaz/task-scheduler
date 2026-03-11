@@ -109,14 +109,14 @@ func newTestHandler() (*api.Handler, *mockTaskStore, *mockTaskRunner) {
 store := newMockStore()
 runner := &mockTaskRunner{}
 h := api.NewHandler(api.Config{
-Tasks:    store,
-Ring:     &mockNodeAssigner{node: "node-1"},
-Exec:     runner,
-Nodes:    &mockNodeLister{nodes: []string{"node-1", "node-2"}},
-Election: &mockLeaderChecker{leader: "node-1", isLeader: true},
-Sched:    &mockScheduleCounter{count: 2},
-JWTSecret: "test-secret",
-NodeID:   "node-1",
+Tasks:     store,
+Ring:      &mockNodeAssigner{node: "node-1"},
+Exec:      runner,
+Nodes:     &mockNodeLister{nodes: []string{"node-1", "node-2"}},
+Election:  &mockLeaderChecker{leader: "node-1", isLeader: true},
+Sched:     &mockScheduleCounter{count: 2},
+JWTSecret: testSecret,
+NodeID:    "node-1",
 })
 return h, store, runner
 }
@@ -131,6 +131,8 @@ req.Header.Set("Content-Type", "application/json")
 } else {
 req = httptest.NewRequest(method, path, nil)
 }
+// include a valid bearer token so protected routes pass the JWT middleware
+req.Header.Set("Authorization", "Bearer "+makeToken("node-1", testSecret, time.Now().Add(time.Hour)))
 rr := httptest.NewRecorder()
 api.NewRouter(h).ServeHTTP(rr, req)
 return rr
